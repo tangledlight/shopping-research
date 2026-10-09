@@ -19,8 +19,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 API_URL = "https://api.browser-use.com/api/v4/runs"
-OUTPUT_CSV = ROOT / "yesstyle_square_neck_long_sleeve_offwhite_natural_fibers.csv"
-RAW_OUTPUT = ROOT / "yesstyle_offwhite_research_raw.json"
+OUTPUT_CSV = ROOT / "yesstyle_square_neck_long_sleeve_autumn_natural_fibers.csv"
+CANDIDATES_CSV = ROOT / "yesstyle_square_neck_long_sleeve_autumn_candidates.csv"
+RAW_OUTPUT = ROOT / "yesstyle_autumn_research_raw.json"
 FIELDS = [
     "product_name", "brand", "price", "currency", "product_url", "image_url",
     "neckline", "sleeve_length", "fiber_composition", "fiber_category",
@@ -30,9 +31,13 @@ FIELDS = [
     "match_confidence", "notes",
 ]
 CONVENTIONAL_NATURAL_FIBERS = ("cotton", "linen", "hemp", "wool", "cashmere", "silk")
-OFF_WHITE_COLOR_TERMS = (
-    "off white", "off-white", "ivory", "cream", "ecru", "natural", "sandy",
-    "sand", "taupe", "beige", "oatmeal", "bone",
+AUTUMN_COLOR_TERMS = (
+    "black", "white", "off white", "off-white", "ivory", "cream", "ecru",
+    "beige", "camel", "khaki", "brown", "coffee", "mocha", "chocolate",
+    "taupe", "sand", "sandy", "oatmeal", "natural", "bone", "olive",
+    "army green", "forest green", "dark green", "moss", "sage", "green",
+    "rust", "terracotta", "burnt orange", "mustard", "burgundy", "wine red",
+    "maroon",
 )
 
 
@@ -52,9 +57,13 @@ For every plausible candidate, open the YesStyle product page. Include a product
 only if the product page verifies all of: (a) square neckline from its images or
 description; (b) long sleeves from its images or description; (c) exact material
 composition; (d) conventional natural fibers are more than 50% of composition;
-and (e) the selectable color options contain at least one off-white-family option.
-Off-white-family labels include Off White, Off-White, Ivory, Cream, Ecru, Natural,
-Sandy, Sand, Taupe, Beige, Oatmeal, or Bone; record the label exactly as shown.
+and (e) the selectable color options contain at least one requested autumn-palette
+option. Match only exact option labels shown on the product page, not the image.
+Requested labels or label fragments: Black, White, Off White, Off-White, Ivory,
+Cream, Ecru, Beige, Camel, Khaki, Brown, Coffee, Mocha, Chocolate, Taupe, Sand,
+Sandy, Oatmeal, Natural, Bone, Olive, Army Green, Forest Green, Dark Green, Moss,
+Sage, Green, Rust, Terracotta, Burnt Orange, Mustard, Burgundy, Wine Red, Maroon.
+Record the exact option labels shown.
 Exclude 100% synthetic products, products with unverified composition, unclear
 neckline or sleeve length, or products without a qualifying color option. Do not
 infer any facts from titles.
@@ -81,14 +90,32 @@ Return valid JSON with exactly this shape, no Markdown or commentary:
       "fiber_evidence": null, "match_confidence": null, "notes": null
     }
   ],
+  "candidates": [
+    {
+      "product_name": null, "brand": null, "price": null, "currency": null,
+      "product_url": null, "image_url": null, "neckline": null,
+      "sleeve_length": null, "fiber_composition": null,
+      "fiber_category": null, "natural_fiber": null,
+      "natural_fiber_type": null, "natural_fiber_percentage": null,
+      "synthetic_fiber": null, "color_options": null, "sizes": null,
+      "rating": null, "review_count": null, "availability": null,
+      "neckline_evidence": null, "sleeve_evidence": null,
+      "fiber_evidence": null, "match_confidence": null, "notes": null,
+      "candidate_status": null, "exclusion_reason": null
+    }
+  ],
   "research_summary": {
     "queries": [], "result_pages_reviewed": 0, "candidates_reviewed": 0,
     "included": 0, "exclusions": {}, "limitations": [],
     "completion_reason": null
   }
 }
-Use null when a field is not shown on the product page. Keep evidence concise and
-record fiber composition verbatim. Use semicolons between multiple colors or sizes.'''
+`products` contains strict matches only. `candidates` contains every plausible
+square-neck, long-sleeve product opened during research, whether it qualifies or
+not. For each candidate, use `candidate_status` of `included` or `excluded` and
+give a concise `exclusion_reason`; use `included` for strict matches. Use null
+when a field is not shown. Keep evidence concise, record fiber composition
+verbatim, and use semicolons between multiple colors or sizes.'''
 
 
 def load_env() -> None:
@@ -127,15 +154,17 @@ def parse_result(result: str) -> dict:
     parsed = json.loads(text)
     if not isinstance(parsed, dict) or not isinstance(parsed.get("products"), list):
         raise ValueError("Browser Use result did not include a products list")
+    if not isinstance(parsed.get("candidates", []), list):
+        raise ValueError("Browser Use result candidates field was not a list")
     return parsed
 
 
-def write_csv(products: list[dict]) -> None:
-    with OUTPUT_CSV.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS, extrasaction="ignore")
+def write_csv(products: list[dict], destination: Path, fields: list[str] = FIELDS) -> None:
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         for product in products:
-            writer.writerow({field: product.get(field) for field in FIELDS})
+            writer.writerow({field: product.get(field) for field in fields})
 
 
 def qualifies_as_primarily_conventional_natural_fiber(product: dict) -> bool:
@@ -154,9 +183,9 @@ def qualifies_as_primarily_conventional_natural_fiber(product: dict) -> bool:
     )
 
 
-def has_off_white_color_option(product: dict) -> bool:
+def has_requested_color_option(product: dict) -> bool:
     colors = str(product.get("color_options") or "").lower()
-    return any(term in colors for term in OFF_WHITE_COLOR_TERMS)
+    return any(term in colors for term in AUTUMN_COLOR_TERMS)
 
 
 def main() -> int:
@@ -205,14 +234,21 @@ def main() -> int:
         product for product in result["products"]
         if (
             qualifies_as_primarily_conventional_natural_fiber(product)
-            and has_off_white_color_option(product)
+            and has_requested_color_option(product)
         )
     ]
-    write_csv(qualifying_products)
+    all_candidates = result.get("candidates") or result["products"]
+    write_csv(qualifying_products, OUTPUT_CSV)
+    write_csv(
+        all_candidates,
+        CANDIDATES_CSV,
+        FIELDS + ["candidate_status", "exclusion_reason"],
+    )
     summary = result.get("research_summary", {})
     summary["included_after_validation"] = len(qualifying_products)
     summary["post_validation_exclusions"] = len(result["products"]) - len(qualifying_products)
     print(f"Saved {len(qualifying_products)} verified products to {OUTPUT_CSV.name}.")
+    print(f"Saved {len(all_candidates)} potential candidates to {CANDIDATES_CSV.name}.")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0
 
