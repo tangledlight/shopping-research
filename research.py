@@ -19,8 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 API_URL = "https://api.browser-use.com/api/v4/runs"
-OUTPUT_CSV = ROOT / "yesstyle_square_neck_long_sleeve_natural_fibers.csv"
-RAW_OUTPUT = ROOT / "yesstyle_research_raw.json"
+OUTPUT_CSV = ROOT / "yesstyle_square_neck_long_sleeve_offwhite_natural_fibers.csv"
+RAW_OUTPUT = ROOT / "yesstyle_offwhite_research_raw.json"
 FIELDS = [
     "product_name", "brand", "price", "currency", "product_url", "image_url",
     "neckline", "sleeve_length", "fiber_composition", "fiber_category",
@@ -29,26 +29,41 @@ FIELDS = [
     "availability", "neckline_evidence", "sleeve_evidence", "fiber_evidence",
     "match_confidence", "notes",
 ]
+CONVENTIONAL_NATURAL_FIBERS = ("cotton", "linen", "hemp", "wool", "cashmere", "silk")
+OFF_WHITE_COLOR_TERMS = (
+    "off white", "off-white", "ivory", "cream", "ecru", "natural", "sandy",
+    "sand", "taupe", "beige", "oatmeal", "bone",
+)
 
 
 TASK = r'''Research women's clothing on YesStyle and return ONLY a JSON object.
 
-Search this exact query, reviewing the first 20 results
+Search these exact queries and closely related YesStyle search/category results.
+Review every available result page for each query, stopping only when there are
+no more results or Browser Use ends the task because the account has no credit.
+Deduplicate across searches:
 1. square neck long sleeve
+2. square neckline long sleeve
+3. square neck long sleeve cotton
+4. square neckline long sleeve cotton
 
 For every plausible candidate, open the YesStyle product page. Include a product
 only if the product page verifies all of: (a) square neckline from its images or
 description; (b) long sleeves from its images or description; (c) exact material
-composition; and (d) conventional natural fibers are more than 50% of composition.
+composition; (d) conventional natural fibers are more than 50% of composition;
+and (e) the selectable color options contain at least one off-white-family option.
+Off-white-family labels include Off White, Off-White, Ivory, Cream, Ecru, Natural,
+Sandy, Sand, Taupe, Beige, Oatmeal, or Bone; record the label exactly as shown.
 Exclude 100% synthetic products, products with unverified composition, unclear
-neckline or sleeve length, and duplicates. Do not infer any facts from titles.
+neckline or sleeve length, products without a qualifying color option, and
+duplicates. Do not infer any facts from titles.
 
 Material categories: NATURAL is 100% cotton, linen, hemp, wool, cashmere, silk,
 or another conventional natural fiber; NATURAL_BLEND has more than 50% conventional
 natural fiber plus other fiber; REGENERATED_CELLULOSE covers rayon, viscose, modal,
-lyocell, and Tencel (include only if it satisfies the primarily-natural rule and
-state the caveat); SYNTHETIC is polyester, nylon, acrylic, polyurethane, spandex,
-or similar; UNKNOWN is unavailable composition and must be excluded.
+lyocell, and Tencel and must be excluded unless a conventional natural fiber alone
+exceeds 50%; SYNTHETIC is polyester, nylon, acrylic, polyurethane, spandex, or
+similar; UNKNOWN is unavailable composition and must be excluded.
 
 Return valid JSON with exactly this shape, no Markdown or commentary:
 {
@@ -66,8 +81,9 @@ Return valid JSON with exactly this shape, no Markdown or commentary:
     }
   ],
   "research_summary": {
-    "queries": [], "candidates_reviewed": 0, "included": 0,
-    "exclusions": {}, "limitations": []
+    "queries": [], "result_pages_reviewed": 0, "candidates_reviewed": 0,
+    "included": 0, "exclusions": {}, "limitations": [],
+    "completion_reason": null
   }
 }
 Use null when a field is not shown on the product page. Keep evidence concise and
@@ -121,6 +137,27 @@ def write_csv(products: list[dict]) -> None:
             writer.writerow({field: product.get(field) for field in FIELDS})
 
 
+def qualifies_as_primarily_conventional_natural_fiber(product: dict) -> bool:
+    """Enforce the brief rather than trusting an agent material label alone."""
+    fiber_type = str(product.get("natural_fiber_type") or "").lower()
+    category = str(product.get("fiber_category") or "").upper()
+    percentage = str(product.get("natural_fiber_percentage") or "").replace("%", "").strip()
+    try:
+        amount = float(percentage)
+    except ValueError:
+        return False
+    return (
+        amount > 50
+        and category != "REGENERATED_CELLULOSE"
+        and any(fiber in fiber_type for fiber in CONVENTIONAL_NATURAL_FIBERS)
+    )
+
+
+def has_off_white_color_option(product: dict) -> bool:
+    colors = str(product.get("color_options") or "").lower()
+    return any(term in colors for term in OFF_WHITE_COLOR_TERMS)
+
+
 def main() -> int:
     load_env()
     if not os.environ.get("BROWSER_USE_API_KEY"):
@@ -136,8 +173,9 @@ def main() -> int:
             return 0
         print(f"Resuming research run {run_id}.", flush=True)
     elif len(sys.argv) == 1:
-        # This cap contains one broad, verification-heavy research pass.
-        created = request(API_URL, "POST", {"task": TASK, "maxCostUsd": 3.00})
+        # The user requested no artificial spend cap: stop when results end or
+        # the Browser Use account has no remaining credit.
+        created = request(API_URL, "POST", {"task": TASK})
         run_id = created["id"]
         print(f"Research started (run {run_id}).", flush=True)
     else:
@@ -162,9 +200,19 @@ def main() -> int:
         raise RuntimeError(f"Run {run_id} ended with status {run.get('status')}: {run.get('error', '')}")
     result = parse_result(run["result"])
     RAW_OUTPUT.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    write_csv(result["products"])
-    print(f"Saved {len(result['products'])} verified products to {OUTPUT_CSV.name}.")
-    print(json.dumps(result.get("research_summary", {}), indent=2, ensure_ascii=False))
+    qualifying_products = [
+        product for product in result["products"]
+        if (
+            qualifies_as_primarily_conventional_natural_fiber(product)
+            and has_off_white_color_option(product)
+        )
+    ]
+    write_csv(qualifying_products)
+    summary = result.get("research_summary", {})
+    summary["included_after_validation"] = len(qualifying_products)
+    summary["post_validation_exclusions"] = len(result["products"]) - len(qualifying_products)
+    print(f"Saved {len(qualifying_products)} verified products to {OUTPUT_CSV.name}.")
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0
 
 
