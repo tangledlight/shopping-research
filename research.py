@@ -38,14 +38,15 @@ OFF_WHITE_COLOR_TERMS = (
 
 TASK = r'''Research women's clothing on YesStyle and return ONLY a JSON object.
 
-Search these exact queries and closely related YesStyle search/category results.
-Review every available result page for each query, stopping only when there are
-no more results or Browser Use ends the task because the account has no credit.
-Deduplicate across searches:
-1. square neck long sleeve
-2. square neckline long sleeve
-3. square neck long sleeve cotton
-4. square neckline long sleeve cotton
+Search YesStyle for this one exact query only: square neck long sleeve.
+
+Review every accessible result page for that query. Do not construct, guess, or
+edit pagination URL parameters. Instead, use the visible pagination control on
+the current YesStyle results page: click its numbered page link or Next control,
+wait for the new results to load, verify that the product list changed, and
+repeat until the Next control is absent or disabled. If a page fails to load,
+retry the same visible control once, then record the failure and stop rather than
+claiming the remaining pages were reviewed. Do not deduplicate results.
 
 For every plausible candidate, open the YesStyle product page. Include a product
 only if the product page verifies all of: (a) square neckline from its images or
@@ -55,8 +56,8 @@ and (e) the selectable color options contain at least one off-white-family optio
 Off-white-family labels include Off White, Off-White, Ivory, Cream, Ecru, Natural,
 Sandy, Sand, Taupe, Beige, Oatmeal, or Bone; record the label exactly as shown.
 Exclude 100% synthetic products, products with unverified composition, unclear
-neckline or sleeve length, products without a qualifying color option, and
-duplicates. Do not infer any facts from titles.
+neckline or sleeve length, or products without a qualifying color option. Do not
+infer any facts from titles.
 
 Material categories: NATURAL is 100% cotton, linen, hemp, wool, cashmere, silk,
 or another conventional natural fiber; NATURAL_BLEND has more than 50% conventional
