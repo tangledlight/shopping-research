@@ -19,9 +19,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 API_URL = "https://api.browser-use.com/api/v4/runs"
-OUTPUT_CSV = ROOT / "yesstyle_square_neck_long_sleeve_autumn_natural_fibers.csv"
-CANDIDATES_CSV = ROOT / "yesstyle_square_neck_long_sleeve_autumn_candidates.csv"
-RAW_OUTPUT = ROOT / "yesstyle_autumn_research_raw.json"
+OUTPUT_CSV = ROOT / "yesstyle_square_neck_long_sleeve_top_autumn_natural_fibers.csv"
+CANDIDATES_CSV = ROOT / "yesstyle_square_neck_long_sleeve_top_autumn_candidates.csv"
+RAW_OUTPUT = ROOT / "yesstyle_top_autumn_research_raw.json"
 FIELDS = [
     "product_name", "brand", "price", "currency", "product_url", "image_url",
     "neckline", "sleeve_length", "fiber_composition", "fiber_category",
@@ -43,37 +43,39 @@ AUTUMN_COLOR_TERMS = (
 
 TASK = r'''Research women's clothing on YesStyle and return ONLY a JSON object.
 
-Search YesStyle for this one exact query only: square neck long sleeve.
+Use plain, friendly, problem-focused language in all free-text fields. Prefer
+short bullet-style facts in notes and exclusion reasons. Do not make up labels,
+material categories, or explanations that YesStyle does not provide.
 
-Review every accessible result page for that query. Do not construct, guess, or
-edit pagination URL parameters. Instead, use the visible pagination control on
-the current YesStyle results page: click its numbered page link or Next control,
-wait for the new results to load, verify that the product list changed, and
-repeat until the Next control is absent or disabled. If a page fails to load,
-retry the same visible control once, then record the failure and stop rather than
-claiming the remaining pages were reviewed. Do not deduplicate results.
+What to look for
 
-For every plausible candidate, open the YesStyle product page. Include a product
-only if the product page verifies all of: (a) square neckline from its images or
-description; (b) long sleeves from its images or description; (c) exact material
-composition; (d) conventional natural fibers are more than 50% of composition;
-and (e) the selectable color options contain at least one requested autumn-palette
-option. Match only exact option labels shown on the product page, not the image.
-Requested labels or label fragments: Black, White, Off White, Off-White, Ivory,
-Cream, Ecru, Beige, Camel, Khaki, Brown, Coffee, Mocha, Chocolate, Taupe, Sand,
-Sandy, Oatmeal, Natural, Bone, Olive, Army Green, Forest Green, Dark Green, Moss,
-Sage, Green, Rust, Terracotta, Burnt Orange, Mustard, Burgundy, Wine Red, Maroon.
-Record the exact option labels shown.
-Exclude 100% synthetic products, products with unverified composition, unclear
-neckline or sleeve length, or products without a qualifying color option. Do not
-infer any facts from titles.
+- Search YesStyle for this exact query only: square neck long sleeve top.
+- Review no more than 20 plausible products. A plausible product is one you open
+  on its own YesStyle page to check it properly. Stop after the twentieth one.
+- If you need another results page, click YesStyle's visible page number or Next
+  button. Do not invent or edit page URLs.
 
-Material categories: NATURAL is 100% cotton, linen, hemp, wool, cashmere, silk,
-or another conventional natural fiber; NATURAL_BLEND has more than 50% conventional
-natural fiber plus other fiber; REGENERATED_CELLULOSE covers rayon, viscose, modal,
-lyocell, and Tencel and must be excluded unless a conventional natural fiber alone
-exceeds 50%; SYNTHETIC is polyester, nylon, acrylic, polyurethane, spandex, or
-similar; UNKNOWN is unavailable composition and must be excluded.
+For every product you open, check the product page for:
+
+- A clearly square neckline.
+- Long sleeves.
+- The exact material composition.
+- More than 50% conventional natural fiber: cotton, linen, hemp, wool, cashmere,
+  or silk.
+- At least one selected color option from this autumn-friendly list: Black, White,
+  Off White, Off-White, Ivory, Cream, Ecru, Beige, Camel, Khaki, Brown, Coffee,
+  Mocha, Chocolate, Taupe, Sand, Sandy, Oatmeal, Natural, Bone, Olive, Army Green,
+  Forest Green, Dark Green, Moss, Sage, Green, Rust, Terracotta, Burnt Orange,
+  Mustard, Burgundy, Wine Red, or Maroon.
+
+Use the exact color label shown by YesStyle. Do not decide a color from a product
+image. Do not guess a material from the title or image. Exclude 100% synthetic
+items, items with missing composition, unclear necklines or sleeve lengths, and
+items without a requested color option.
+
+For `fiber_category`, leave the value null unless YesStyle itself provides a
+matching category. The exact `fiber_composition` and natural-fiber percentage are
+more useful than a made-up label.
 
 Return valid JSON with exactly this shape, no Markdown or commentary:
 {
@@ -110,12 +112,15 @@ Return valid JSON with exactly this shape, no Markdown or commentary:
     "completion_reason": null
   }
 }
-`products` contains strict matches only. `candidates` contains every plausible
-square-neck, long-sleeve product opened during research, whether it qualifies or
-not. For each candidate, use `candidate_status` of `included` or `excluded` and
-give a concise `exclusion_reason`; use `included` for strict matches. Use null
-when a field is not shown. Keep evidence concise, record fiber composition
-verbatim, and use semicolons between multiple colors or sizes.'''
+`products` contains strict matches only. `candidates` contains one row for every
+candidate opened during research, whether it qualifies or not; it must contain
+exactly `research_summary.candidates_reviewed` rows and that number must not
+exceed 20. Do not return a compact summary, a shortlist, or a count that exceeds
+the number of candidate rows. For each candidate, use `candidate_status` of
+`included` or `excluded` and give a concise `exclusion_reason`; use `included`
+for strict matches. Use null when a field is not shown. Keep evidence concise,
+record fiber composition verbatim, and use semicolons between multiple colors or
+sizes.'''
 
 
 def load_env() -> None:
@@ -156,6 +161,16 @@ def parse_result(result: str) -> dict:
         raise ValueError("Browser Use result did not include a products list")
     if not isinstance(parsed.get("candidates", []), list):
         raise ValueError("Browser Use result candidates field was not a list")
+    summary = parsed.get("research_summary")
+    if not isinstance(summary, dict):
+        raise ValueError("Browser Use result did not include a research summary")
+    reviewed = summary.get("candidates_reviewed")
+    if not isinstance(reviewed, int) or reviewed != len(parsed["candidates"]):
+        raise ValueError(
+            "Browser Use did not itemize every reviewed candidate; no CSV was written"
+        )
+    if reviewed > 20:
+        raise ValueError("Browser Use exceeded the 20-candidate research limit")
     return parsed
 
 
@@ -195,11 +210,15 @@ def main() -> int:
 
     # Passing a run ID resumes retrieval after a local terminal timeout without
     # creating duplicate paid research work.
-    if len(sys.argv) == 3 and sys.argv[1] in {"--run-id", "--status"}:
+    if len(sys.argv) == 3 and sys.argv[1] in {"--run-id", "--status", "--cancel"}:
         run_id = sys.argv[2]
         if sys.argv[1] == "--status":
             status = request(f"{API_URL}/{run_id}/status")
             print(f"Run status: {status.get('status')}")
+            return 0
+        if sys.argv[1] == "--cancel":
+            cancelled = request(f"{API_URL}/{run_id}/cancel", "POST")
+            print(f"Run cancellation requested: {cancelled.get('status', 'accepted')}")
             return 0
         print(f"Resuming research run {run_id}.", flush=True)
     elif len(sys.argv) == 1:
@@ -209,7 +228,7 @@ def main() -> int:
         run_id = created["id"]
         print(f"Research started (run {run_id}).", flush=True)
     else:
-        raise ValueError("Usage: python3 research.py [--run-id RUN_ID | --status RUN_ID]")
+        raise ValueError("Usage: python3 research.py [--run-id RUN_ID | --status RUN_ID | --cancel RUN_ID]")
 
     deadline = time.monotonic() + 1800
     last_state = None
